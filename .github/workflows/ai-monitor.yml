@@ -1,0 +1,52 @@
+name: AI検索モニター
+
+on:
+  schedule:
+    # 毎週月曜 9:17（日本時間）に自動実行
+    - cron: "17 0 * * 1"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "お試しで質問数を減らす場合の数（空欄なら全問）"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: AIに質問して記録
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          SHEETS_WEBHOOK_URL: ${{ secrets.SHEETS_WEBHOOK_URL }}
+          SHEETS_TOKEN: ${{ secrets.SHEETS_TOKEN }}
+          LIMIT: ${{ github.event.inputs.limit }}
+        run: |
+          if [ -n "$LIMIT" ]; then
+            python monitor.py --limit "$LIMIT"
+          else
+            python monitor.py
+          fi
+
+      - name: 結果をリポジトリに保存
+        run: |
+          git config user.name "ai-monitor-bot"
+          git config user.email "ai-monitor-bot@users.noreply.github.com"
+          git add results/
+          git diff --cached --quiet || git commit -m "AI検索モニター結果 $(date +%F)"
+          git push
