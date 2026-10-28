@@ -421,9 +421,11 @@ def main():
         if args.dry_run or os.environ.get(env):
             active.append(name)
         else:
-            print(f"- {AI_LABEL[name]}: APIキー（{env}）が未登録のためスキップ")
+            print(f"::notice::{AI_LABEL[name]}: APIキー（{env}）が未登録のためスキップ")
     if not active:
-        sys.exit("使えるAIがありません。APIキーを登録してください。")
+        print("::error::使えるAIがありません。リポジトリの Settings → Secrets and variables → Actions に"
+              " GEMINI_API_KEY などのAPIキーを登録してください。")
+        sys.exit(1)
     print(f"{today} 実行: AI={', '.join(AI_LABEL[a] for a in active)} / 質問 {len(questions)}問 × {repeats}回")
 
     def run_provider(name):
@@ -451,6 +453,8 @@ def main():
                 ])
                 mark = "◎" if a["mentioned"] else ("×" if err else "－")
                 print(f"  {mark} [{AI_LABEL[name]}] {q[:30]}  順位:{a['rank'] or '-'}  {err[:80]}")
+                if err:
+                    print(f"::warning::{AI_LABEL[name]} エラー: {err[:250]}".replace("\n", " "))
         return rows
 
     with ThreadPoolExecutor(max_workers=len(active)) as ex:
@@ -480,6 +484,7 @@ def main():
     send_sheet("レポート", ["日付", "内容"], [[today, report]])
 
     total = sum(r[11] for r in log_rows)
+    print(f"::notice::完了 " + " / ".join(f"{s[1]} 言及{s[3]}/{s[2]}" for s in summary_rows))
     print(f"\n完了。推定コスト合計 ${total:.3f}（約{total * 150:.0f}円）")
     print("\n" + report)
 
