@@ -1,9 +1,0 @@
-﻿日付,AI,質問,当社言及,当社順位,推薦された業者（順）,類似名称混同,回答内の電話番号,要確認,参照URL,回答本文,推定コスト(USD),エラー,当社サイト参照
-2026-10-29,Gemini,寝屋川市で給湯器交換を頼むならおすすめの業者はどこですか？,エラー,,,,,,,,0,"HTTP 429: {
-  ""error"": {
-    ""code"": 429,
-    ""message"": ""You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. "",",
-2026-10-29,Gemini,寝屋川 給湯器 交換 安い 業者,エラー,,,,,,,,0,"HTTP 429: {
-  ""error"": {
-    ""code"": 429,
-    ""message"": ""You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. "",",
