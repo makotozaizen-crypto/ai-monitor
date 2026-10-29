@@ -36,7 +36,7 @@ TIMEOUT = 180
 
 LOG_HEADER = [
     "日付", "AI", "質問", "当社言及", "当社順位", "推薦された業者（順）",
-    "類似名称混同", "回答内の電話番号", "要確認", "参照URL", "回答本文", "推定コスト(USD)", "エラー", "当社サイト参照",
+    "類似名称混同", "回答内の電話番号（他社含む）", "要確認", "参照URL", "回答本文", "推定コスト(USD)", "エラー", "当社サイト参照", "類似名称の他社に言及",
 ]
 SUMMARY_HEADER = ["日付", "AI", "質問数", "言及数", "言及率", "平均順位", "混同件数", "要確認件数", "合計コスト(USD)",
                   "当社サイト参照数"]
@@ -226,23 +226,38 @@ def gemini_json(cfg, prompt: str, schema: dict) -> dict:
     return json.loads("".join(p.get("text", "") for p in parts) or "{}")
 
 
-def extract_businesses(cfg, question: str, answer: str) -> list[str]:
+def extract_info(cfg, question: str, answer: str) -> dict:
+    """回答から、推薦された業者の並び・当社の電話番号として書かれた番号・混同の有無をAIで読み取る"""
+    empty = {"businesses": [], "our_phones": [], "confused": False}
     if not answer.strip() or not os.environ.get("GEMINI_API_KEY"):
-        return []
+        return empty
     prompt = (
-        "次の文章は、ある質問に対するAIアシスタントの回答です。\n"
-        "回答の中で紹介・推薦されている『業者・会社・店舗・サービス名』を、登場した順に抜き出してください。\n"
-        "比較サイトやポータルサイト（ミツモア、くらしのマーケット等）も1つの名前として含めてください。\n"
-        "メーカー名（リンナイ、ノーリツ等）や一般名詞は含めないでください。名前は回答の表記のまま書いてください。\n\n"
+        "次の文章は、ある質問に対するAIアシスタントの回答です。以下の3点を読み取ってください。\n"
+        "1. businesses: 回答の中で紹介・推薦されている『業者・会社・店舗・サービス名』を登場した順に。"
+        "比較サイト（ミツモア、くらしのマーケット等）も1つの名前として含める。メーカー名（リンナイ、ノーリツ等）や一般名詞は含めない。"
+        "同じ業者は1回だけ、名前は回答の表記のまま。\n"
+        "2. our_phones: 「給湯器交換の匠」（運営: Sanwatec合同会社）の電話番号として書かれている番号だけ。"
+        "他社の番号は含めない。\n"
+        "3. confused: 回答が「給湯器交換の匠」と、類似名称の別会社「給湯の匠」（株式会社ワイエネット）などを"
+        "同じ会社として扱ったり、他社の住所・電話・評判を当社のものとして書いていれば true。"
+        "「名前が似た別会社があるので注意」と区別して説明しているだけなら false。\n\n"
         f"【質問】{question}\n\n【回答】\n{answer[:8000]}"
     )
-    schema = {"type": "OBJECT", "properties": {"businesses": {"type": "ARRAY", "items": {"type": "STRING"}}},
-              "required": ["businesses"]}
+    schema = {"type": "OBJECT", "properties": {
+        "businesses": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "our_phones": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "confused": {"type": "BOOLEAN"},
+    }, "required": ["businesses", "our_phones", "confused"]}
     try:
-        return [b.strip() for b in gemini_json(cfg, prompt, schema).get("businesses", []) if b.strip()][:15]
+        d = gemini_json(cfg, prompt, schema)
+        return {
+            "businesses": [b.strip() for b in d.get("businesses", []) if b.strip()][:15],
+            "our_phones": [p.strip() for p in d.get("our_phones", []) if p.strip()],
+            "confused": bool(d.get("confused")),
+        }
     except Exception as e:  # 分析が失敗しても記録は続ける
-        print(f"  [業者名の抽出に失敗] {e}", file=sys.stderr)
-        return []
+        print(f"  [回答の読み取りに失敗] {e}", file=sys.stderr)
+        return empty
 
 
 def is_ours(name: str, brand: dict) -> bool:
@@ -252,7 +267,7 @@ def is_ours(name: str, brand: dict) -> bool:
     return any(b.lower() in n for b in brand["names"] + brand.get("domains", []))
 
 
-def analyze(cfg, question: str, res: dict, businesses: list[str] | None = None) -> dict:
+def analyze(cfg, question: str, res: dict, info: dict | None = None) -> dict:
     brand = cfg["brand"]
     text = res.get("text", "")
     low = text.lower()
@@ -261,25 +276,27 @@ def analyze(cfg, question: str, res: dict, businesses: list[str] | None = None) 
     # 言及＝回答本文に当社名/ドメインが出た。参照＝当社サイトが情報源として使われた
     mentioned = any(b.lower() in low for b in brand["names"] + brand.get("domains", []))
     cited = any(d.lower() in urls_low for d in brand.get("domains", []))
-    # 「給湯の匠」は「給湯器交換の匠」と別物。混同判定は当社名を除いてから行う
-    stripped = (low + "\n" + urls_low).replace("給湯器交換の匠", "")
-    confused = any(s.lower() in stripped for s in brand.get("similar_names", []) + brand.get("similar_domains", []))
+    # 類似名称の他社が回答に出たか（「別会社なので注意」という説明も含む。参考情報）
+    stripped = low.replace("給湯器交換の匠", "")
+    similar_seen = any(s.lower() in stripped for s in brand.get("similar_names", []) + brand.get("similar_domains", []))
 
-    if businesses is None:
-        businesses = extract_businesses(cfg, question, text)
+    if info is None:
+        info = extract_info(cfg, question, text)
+    businesses = info["businesses"]
     rank = next((i + 1 for i, b in enumerate(businesses) if is_ours(b, brand)), None)
     if rank is None and mentioned and businesses:
         rank = "リスト外で言及"
 
     phones = sorted({p for p in PHONE_RE.findall(text) if len(norm_phone(p)) >= 10})
     official = {norm_phone(p) for p in brand.get("official_phones", []) if p}
+    confused = info["confused"]
     flags = []
     if confused:
-        flags.append("類似名称の他社が登場")
+        flags.append("類似名称の他社と混同")
     if mentioned and official:
-        wrong = [p for p in phones if norm_phone(p) not in official]
+        wrong = [p for p in info["our_phones"] if norm_phone(p) not in official]
         if wrong:
-            flags.append("公式と違う電話番号: " + ", ".join(wrong))
+            flags.append("当社の番号として誤った電話番号: " + ", ".join(wrong))
     if mentioned:
         cities = brand.get("official_cities", [])
         if cities and "店舗" in question and not any(c in text for c in cities):
@@ -287,7 +304,7 @@ def analyze(cfg, question: str, res: dict, businesses: list[str] | None = None) 
 
     return {
         "mentioned": mentioned, "cited": cited, "rank": rank, "businesses": businesses,
-        "confused": confused, "phones": phones, "flags": flags,
+        "confused": confused, "similar_seen": similar_seen, "phones": phones, "flags": flags,
     }
 
 
@@ -304,8 +321,11 @@ def fake_answer(provider: str, q: str, i: int) -> dict:
     return {"text": samples[(hash(provider) + i) % 3], "urls": ["https://sanwatec.net/"], "cost": 0.004}
 
 
-def fake_businesses(answer: str) -> list[str]:
-    return re.findall(r"\d\. ([^\s、（(]+)", answer)
+def fake_info(cfg, answer: str) -> dict:
+    ours = "給湯器交換の匠" in answer
+    return {"businesses": re.findall(r"\d\. ([^\s、（(]+)", answer),
+            "our_phones": PHONE_RE.findall(answer) if ours else [],
+            "confused": False}
 
 
 # ------------------------------------------------------------
@@ -313,6 +333,11 @@ def fake_businesses(answer: str) -> list[str]:
 # ------------------------------------------------------------
 def append_csv(path: Path, header: list, rows: list[list]):
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        with open(path, encoding="utf-8-sig") as f:
+            old = next(csv.reader(f), [])
+        if old != header:  # 列が変わったら古いファイルは別名で残す
+            path.rename(path.with_name(f"{path.stem}_old_{dt.datetime.now(JST):%Y%m%d%H%M}{path.suffix}"))
     new = not path.exists()
     with open(path, "a", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
@@ -439,9 +464,9 @@ def main():
                     err = str(e)[:300]
                 if err:
                     a = {"mentioned": False, "cited": False, "rank": None, "businesses": [], "confused": False,
-                         "phones": [], "flags": []}
+                         "similar_seen": False, "phones": [], "flags": []}
                 else:
-                    a = analyze(cfg, q, res, fake_businesses(res["text"]) if args.dry_run else None)
+                    a = analyze(cfg, q, res, fake_info(cfg, res["text"]) if args.dry_run else None)
                 rows.append([
                     today, AI_LABEL[name], q,
                     "あり" if a["mentioned"] else ("エラー" if err else "なし"),
@@ -450,6 +475,7 @@ def main():
                     "\n".join(dict.fromkeys(res.get("urls", [])))[:2000],
                     res.get("text", "")[:3000], res.get("cost", 0), err,
                     "あり" if a["cited"] else "",
+                    "あり" if a["similar_seen"] else "",
                 ])
                 mark = "◎" if a["mentioned"] else ("×" if err else "－")
                 print(f"  {mark} [{AI_LABEL[name]}] {q[:30]}  順位:{a['rank'] or '-'}  {err[:80]}")
