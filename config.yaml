@@ -77,7 +77,7 @@ providers:
     model: claude-haiku-5-5
     max_searches: 3
   perplexity:
-    enabled: true
+    enabled: false
     model: perplexity/sonar
 
 # 回答から業者名を抜き出す・週次の改善提案を書くAI（安いGeminiを使用）
